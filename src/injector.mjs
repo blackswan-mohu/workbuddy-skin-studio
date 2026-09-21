@@ -5,8 +5,8 @@ import { CdpSession, fetchRendererTargets, waitForRendererTargets } from "./cdp-
 import { buildSkinCss } from "./skin-css.mjs";
 import { buildSkinMenuScript, CSS_SENTINELS } from "./skin-menu.mjs";
 
-const STYLE_ID = "workbuddy-skin-style";
-const MENU_ID = "workbuddy-skin-menu";
+const STYLE_ID = "doubao-skin-style";
+const MENU_ID = "doubao-skin-menu";
 const MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" };
 
 async function evaluateTargets(targets, expression, Session) {
@@ -37,7 +37,14 @@ async function themeEntry(loadedTheme) {
   };
 }
 
-export async function applySkin({ loadedTheme, themes, port, deps = {} }) {
+export async function applySkin({
+  loadedTheme,
+  themes,
+  port,
+  rendererHint,
+  explicit = false,
+  deps = {},
+}) {
   const wait = deps.waitForRendererTargets ?? waitForRendererTargets;
   const Session = deps.Session ?? CdpSession;
   const menuThemes = themes?.length ? themes : [loadedTheme];
@@ -65,37 +72,39 @@ export async function applySkin({ loadedTheme, themes, port, deps = {} }) {
     styleId: STYLE_ID,
     menuId: MENU_ID,
     cssTemplate,
+    explicit,
   });
   const targets = await wait(port, {
     timeoutMs: deps.waitTimeoutMs ?? 20_000,
     pollMs: deps.pollMs ?? 500,
+    rendererHint,
   });
   const values = await evaluateTargets(targets, expression, Session);
   return { applied: values.length, themeId, menuThemes: entries.map(({ id }) => id), targets: targets.map(({ id }) => id) };
 }
 
-export async function removeSkin({ port, deps = {} }) {
+export async function removeSkin({ port, rendererHint, deps = {} }) {
   const fetchTargets = deps.fetchRendererTargets ?? fetchRendererTargets;
   const Session = deps.Session ?? CdpSession;
   const expression = `(() => {
     document.getElementById(${JSON.stringify(STYLE_ID)})?.remove();
     document.getElementById(${JSON.stringify(MENU_ID)})?.remove();
-    delete document.documentElement.dataset.workbuddySkin;
+    delete document.documentElement.dataset.doubaoSkin;
     return true;
   })()`;
-  const targets = await fetchTargets(port);
+  const targets = await fetchTargets(port, { rendererHint });
   const values = await evaluateTargets(targets, expression, Session);
   return { removed: values.length };
 }
 
-export async function skinStatus({ port, deps = {} }) {
+export async function skinStatus({ port, rendererHint, deps = {} }) {
   const fetchTargets = deps.fetchRendererTargets ?? fetchRendererTargets;
   const Session = deps.Session ?? CdpSession;
   const expression = `(() => ({
     installed: Boolean(document.getElementById(${JSON.stringify(STYLE_ID)})),
     menu: Boolean(document.getElementById(${JSON.stringify(MENU_ID)})),
-    themeId: document.documentElement.dataset.workbuddySkin ?? null
+    themeId: document.documentElement.dataset.doubaoSkin ?? null
   }))()`;
-  const targets = await fetchTargets(port);
+  const targets = await fetchTargets(port, { rendererHint });
   return evaluateTargets(targets, expression, Session);
 }

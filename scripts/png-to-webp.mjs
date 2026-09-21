@@ -1,7 +1,7 @@
-// 通过 WorkBuddy renderer 的 Chromium 把 PNG 编码为 webp（sips 不支持 webp 写入）
+// 通过豆包 renderer 的 Chromium 把 PNG 编码为 webp（sips 不支持 webp 写入）
 import { readFileSync, writeFileSync } from "node:fs";
 
-const CDP = "http://127.0.0.1:9223";
+const CDP = "http://127.0.0.1:9333";
 const inPath = process.argv[2];
 const outPath = process.argv[3];
 
@@ -9,9 +9,9 @@ const pngB64 = readFileSync(inPath).toString("base64");
 const dataUrl = `data:image/png;base64,${pngB64}`;
 
 const targets = (await (await fetch(`${CDP}/json/list`)).json()).filter(
-  (t) => t.type === "page" && t.url.includes("renderer/index.html"),
+  (t) => t.type === "page" && t.url.includes("doubao-chat"),
 );
-if (!targets.length) throw new Error("未找到 WorkBuddy renderer，请先以 CDP 模式启动 WorkBuddy");
+if (!targets.length) throw new Error("未找到豆包 renderer，请先以 CDP 模式启动豆包");
 
 const ws = new WebSocket(targets[0].webSocketDebuggerUrl);
 let id = 0;

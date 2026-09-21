@@ -4,6 +4,24 @@ import { basename, extname, join } from "node:path";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
+// 内置主题在 🎨 菜单里的展示顺序（listThemes 会据此排序）。
+// 表内主题按此处顺序排；不在表内的（如用户自建主题）排在其后，按名称排序。
+const BUILTIN_ORDER = [
+  "jade-rabbit",      // 玉兔捣药（中秋，默认）
+  "mid-autumn-change",// 嫦娥玉桂（中秋）
+  "lantern-moon",     // 花前月下（中秋）
+  "god-of-wealth",    // 财神到
+  "change-benyue",    // 嫦娥奔月
+  "monkey-king",      // 齐天大圣
+  "nezha",            // 哪吒
+  "chinese-dragon",   // 中国龙
+  "dunhuang-feitian", // 敦煌飞天
+  "nine-tailed-fox",  // 九尾狐
+  "panda",            // 国宝熊猫
+  "koi-fish",         // 锦鲤
+  "hua-mulan",        // 花木兰
+];
+
 function slugify(value) {
   const slug = value
     .normalize("NFKD")
@@ -79,5 +97,14 @@ export async function listThemes({ roots }) {
       }
     }
   }
-  return themes.sort((a, b) => a.name.localeCompare(b.name));
+  // 按 BUILTIN_ORDER 排；表外主题（用户自建）排在末尾，彼此按名称排序。
+  const rank = (id) => {
+    const index = BUILTIN_ORDER.indexOf(id);
+    return index === -1 ? BUILTIN_ORDER.length : index;
+  };
+  return themes.sort((a, b) => {
+    const ra = rank(a.id);
+    const rb = rank(b.id);
+    return ra !== rb ? ra - rb : a.name.localeCompare(b.name);
+  });
 }

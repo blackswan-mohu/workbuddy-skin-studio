@@ -3,7 +3,7 @@ import { access } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { DEFAULT_CDP_PORT, DEFAULT_THEME_ID, EXPECTED_BUNDLE_ID, RENDERER_URL_HINT, resolveStudioPaths } from "./constants.mjs";
+import { DEFAULT_THEME_ID, getDoubaoClient, resolveStudioPaths } from "./constants.mjs";
 import { applySkin, removeSkin, skinStatus } from "./injector.mjs";
 import { loadTheme } from "./theme-schema.mjs";
 import { createSingleImageTheme, listThemes } from "./theme-store.mjs";
@@ -15,6 +15,14 @@ function options(argv) {
   for (let index = 1; index < argv.length; index += 1) {
     const key = argv[index];
     if (!key.startsWith("--")) throw new Error(`无法识别的参数：${key}`);
+    const separator = key.indexOf("=");
+    if (separator > 2) {
+      const name = key.slice(2, separator);
+      const value = key.slice(separator + 1);
+      if (!value) throw new Error(`--${name} 缺少值`);
+      result[name] = value;
+      continue;
+    }
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`${key} 缺少值`);
     result[key.slice(2)] = value;
@@ -23,8 +31,8 @@ function options(argv) {
   return result;
 }
 
-function portFrom(value) {
-  const port = value === undefined ? DEFAULT_CDP_PORT : Number(value);
+function portFrom(value, defaultPort) {
+  const port = value === undefined ? defaultPort : Number(value);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("--port 必须是 1024 到 65535 的整数");
   return port;
 }
@@ -52,7 +60,7 @@ export async function runCli(argv, overrides = {}) {
 
   if (command === "help") {
     return {
-      commands: ["list", "create --image PATH --name NAME", "apply [--theme ID] [--port 9223]", "pause", "status", "doctor"],
+      commands: ["list", "create --image PATH --name NAME", "apply [--theme ID] [--client personal|work] [--port PORT]", "pause", "status", "doctor"],
     };
   }
   if (command === "list") return deps.listThemes({ roots });
@@ -62,6 +70,9 @@ export async function runCli(argv, overrides = {}) {
     return deps.createSingleImageTheme({ imagePath: args.image, name: args.name, storeRoot: deps.userThemesRoot });
   }
   if (command === "apply") {
+    const client = getDoubaoClient(args.client);
+    // 用户显式传了 --theme 才算"指定主题"；裸 apply（技能重启后走这条）恢复上次皮肤
+    const explicit = args.theme !== undefined;
     const themeId = args.theme ?? DEFAULT_THEME_ID;
     const themes = await deps.listThemes({ roots });
     const selected = themes.find((theme) => theme.id === themeId);
@@ -79,21 +90,41 @@ export async function runCli(argv, overrides = {}) {
         // 坏主题不阻塞换肤，只是不进菜单
       }
     }
-    return deps.applySkin({ loadedTheme, themes: menuThemes, port: portFrom(args.port) });
+    return deps.applySkin({
+      loadedTheme,
+      themes: menuThemes,
+      port: portFrom(args.port, client.defaultCdpPort),
+      rendererHint: client.rendererUrlHint,
+      explicit,
+    });
   }
   if (command === "pause" || command === "restore") {
-    return deps.removeSkin({ port: portFrom(args.port) });
+    const client = getDoubaoClient(args.client);
+    return deps.removeSkin({
+      port: portFrom(args.port, client.defaultCdpPort),
+      rendererHint: client.rendererUrlHint,
+    });
   }
-  if (command === "status") return deps.skinStatus({ port: portFrom(args.port) });
+  if (command === "status") {
+    const client = getDoubaoClient(args.client);
+    return deps.skinStatus({
+      port: portFrom(args.port, client.defaultCdpPort),
+      rendererHint: client.rendererUrlHint,
+    });
+  }
   if (command === "doctor") {
+    const client = getDoubaoClient(args.client);
     const exists = async (path) => access(path).then(() => true, () => false);
     if (process.platform === "win32") {
+      const environmentPath = client.id === "work"
+        ? process.env.DOUBAO_WORK_EXE
+        : process.env.DOUBAO_EXE;
       const candidates = [
-        process.env.WORKBUDDY_EXE,
-        process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "workbuddy", "WorkBuddy.exe"),
-        process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Programs", "workbuddy", "WorkBuddy.exe"),
-        process.env.ProgramFiles && join(process.env.ProgramFiles, "WorkBuddy", "WorkBuddy.exe"),
-        process.env["ProgramFiles(x86)"] && join(process.env["ProgramFiles(x86)"], "WorkBuddy", "WorkBuddy.exe"),
+        environmentPath,
+        process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, client.windowsInstallDirectory, client.windowsExecutable),
+        process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Programs", client.windowsInstallDirectory, client.windowsExecutable),
+        process.env.ProgramFiles && join(process.env.ProgramFiles, client.windowsInstallDirectory, client.windowsExecutable),
+        process.env["ProgramFiles(x86)"] && join(process.env["ProgramFiles(x86)"], client.windowsInstallDirectory, client.windowsExecutable),
       ].filter(Boolean);
       let app = null;
       for (const c of candidates) {
@@ -101,22 +132,24 @@ export async function runCli(argv, overrides = {}) {
       }
       return {
         platform: "win32",
+        client: client.id,
         app,
         appFound: !!app,
         candidates,
-        cdpPort: DEFAULT_CDP_PORT,
-        rendererHint: RENDERER_URL_HINT,
+        cdpPort: client.defaultCdpPort,
+        rendererHint: client.rendererUrlHint,
         installRoot: resolveStudioPaths().installRoot,
       };
     }
-    const app = "/Applications/WorkBuddy.app";
+    const app = client.darwinAppPath;
     return {
       platform: "darwin",
+      client: client.id,
       app,
       appFound: await exists(app),
-      bundleId: EXPECTED_BUNDLE_ID,
-      cdpPort: DEFAULT_CDP_PORT,
-      rendererHint: RENDERER_URL_HINT,
+      bundleId: client.darwinBundleId,
+      cdpPort: client.defaultCdpPort,
+      rendererHint: client.rendererUrlHint,
       installRoot: resolveStudioPaths().installRoot,
     };
   }
@@ -127,7 +160,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   runCli(process.argv.slice(2))
     .then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))
     .catch((error) => {
-      process.stderr.write(`WorkBuddy Skin Studio：${error.message}\n`);
+      process.stderr.write(`Doubao Skin Studio：${error.message}\n`);
       process.exitCode = 1;
     });
 }

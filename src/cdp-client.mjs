@@ -1,4 +1,197 @@
+import net from "node:net";
+import { createHash, randomBytes } from "node:crypto";
+
 import { RENDERER_URL_HINT } from "./constants.mjs";
+
+// Node 18/20 没有全局 WebSocket（Node 22+ 才有）。为了让工具在 Node 18+ 都能用，
+// 这里内置一个极简、无依赖的 ws:// 客户端（仅回环 CDP 用，不实现 TLS）。
+// 接口对齐浏览器 WebSocket：onopen/onmessage/onerror/onclose + send/close + readyState。
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+export class NodeWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+
+  constructor(url) {
+    this.url = url;
+    this.readyState = NodeWebSocket.CONNECTING;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this.onclose = null;
+    this._buffer = Buffer.alloc(0);
+    this._handshakeDone = false;
+    this._closeEmitted = false;
+    this._fragments = [];
+    this._fragmentOpcode = null;
+
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (error) {
+      queueMicrotask(() => this._fail(new Error(`invalid ws url: ${url}`)));
+      return;
+    }
+    const port = Number(parsed.port);
+    const key = randomBytes(16).toString("base64");
+    this._acceptExpected = createHash("sha1").update(key + WS_GUID).digest("base64");
+
+    this.socket = net.connect({ host: parsed.hostname, port }, () => {
+      const path = `${parsed.pathname}${parsed.search || ""}`;
+      this.socket.write(
+        `GET ${path} HTTP/1.1\r\n` +
+        `Host: ${parsed.hostname}:${port}\r\n` +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
+        `Sec-WebSocket-Key: ${key}\r\n` +
+        "Sec-WebSocket-Version: 13\r\n\r\n",
+      );
+    });
+    this.socket.on("data", (chunk) => this._onData(chunk));
+    this.socket.on("error", (error) => this._fail(error));
+    this.socket.on("close", () => this._emitClose(1006, ""));
+  }
+
+  _fail(error) {
+    if (this.readyState === NodeWebSocket.CLOSED) return;
+    this.readyState = NodeWebSocket.CLOSED;
+    this.onerror?.({ error, message: error?.message });
+    this._emitClose(1006, error?.message || "");
+  }
+
+  _emitClose(code, reason) {
+    if (this._closeEmitted) return;
+    this._closeEmitted = true;
+    this.readyState = NodeWebSocket.CLOSED;
+    try {
+      this.socket?.destroy();
+    } catch {
+      // socket already gone
+    }
+    this.onclose?.({ code, reason });
+  }
+
+  _onData(chunk) {
+    this._buffer = Buffer.concat([this._buffer, chunk]);
+    if (!this._handshakeDone) {
+      const marker = this._buffer.indexOf("\r\n\r\n");
+      if (marker === -1) return;
+      const header = this._buffer.subarray(0, marker).toString("utf8");
+      const statusLine = header.split("\r\n")[0] || "";
+      if (!/\b101\b/.test(statusLine)) {
+        this._fail(new Error(`ws handshake failed: ${statusLine}`));
+        return;
+      }
+      this._handshakeDone = true;
+      this._buffer = this._buffer.subarray(marker + 4);
+      this.readyState = NodeWebSocket.OPEN;
+      this.onopen?.({});
+    }
+    this._parseFrames();
+  }
+
+  _parseFrames() {
+    while (true) {
+      if (this._buffer.length < 2) return;
+      const b0 = this._buffer[0];
+      const b1 = this._buffer[1];
+      const fin = (b0 & 0x80) !== 0;
+      const opcode = b0 & 0x0f;
+      const masked = (b1 & 0x80) !== 0;
+      let length = b1 & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (this._buffer.length < offset + 2) return;
+        length = this._buffer.readUInt16BE(offset);
+        offset += 2;
+      } else if (length === 127) {
+        if (this._buffer.length < offset + 8) return;
+        length = Number(this._buffer.readBigUInt64BE(offset));
+        offset += 8;
+      }
+      let maskKey = null;
+      if (masked) {
+        if (this._buffer.length < offset + 4) return;
+        maskKey = this._buffer.subarray(offset, offset + 4);
+        offset += 4;
+      }
+      if (this._buffer.length < offset + length) return;
+      const payload = this._buffer.subarray(offset, offset + length);
+      this._buffer = this._buffer.subarray(offset + length);
+      if (maskKey) {
+        for (let i = 0; i < payload.length; i += 1) payload[i] ^= maskKey[i & 3];
+      }
+
+      if (opcode === 0x8) {
+        this._emitClose(1000, "");
+        return;
+      }
+      if (opcode === 0x9) {
+        this._sendFrame(0xa, payload);
+        continue;
+      }
+      if (opcode === 0xa) continue;
+      if (opcode === 0x0) {
+        this._fragments.push(payload);
+        if (fin) {
+          const full = Buffer.concat(this._fragments);
+          const op = this._fragmentOpcode;
+          this._fragments = [];
+          this._fragmentOpcode = null;
+          if (op === 0x1) this.onmessage?.({ data: full.toString("utf8") });
+        }
+        continue;
+      }
+      // 0x1 text / 0x2 binary
+      if (!fin) {
+        this._fragmentOpcode = opcode;
+        this._fragments = [payload];
+        continue;
+      }
+      if (opcode === 0x1) this.onmessage?.({ data: payload.toString("utf8") });
+    }
+  }
+
+  _sendFrame(opcode, payload) {
+    const mask = randomBytes(4);
+    const length = payload.length;
+    let header;
+    if (length < 126) {
+      header = Buffer.alloc(2);
+      header[1] = 0x80 | length;
+    } else if (length < 65536) {
+      header = Buffer.alloc(4);
+      header[1] = 0x80 | 126;
+      header.writeUInt16BE(length, 2);
+    } else {
+      header = Buffer.alloc(10);
+      header[1] = 0x80 | 127;
+      header.writeBigUInt64BE(BigInt(length), 2);
+    }
+    header[0] = 0x80 | opcode;
+    const masked = Buffer.from(payload);
+    for (let i = 0; i < masked.length; i += 1) masked[i] ^= mask[i & 3];
+    this.socket.write(Buffer.concat([header, mask, masked]));
+  }
+
+  send(data) {
+    if (this.readyState !== NodeWebSocket.OPEN) throw new Error("CDP socket is not open");
+    this._sendFrame(0x1, Buffer.from(String(data), "utf8"));
+  }
+
+  close() {
+    if (this.readyState === NodeWebSocket.CLOSED || this.readyState === NodeWebSocket.CLOSING) return;
+    this.readyState = NodeWebSocket.CLOSING;
+    try {
+      this._sendFrame(0x8, Buffer.alloc(0));
+    } catch {
+      // best effort close
+    }
+    this._emitClose(1000, "");
+  }
+}
 
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
@@ -24,6 +217,17 @@ function validateDuration(value, name, { allowZero }) {
     throw new TypeError(`${name} must be a finite ${qualifier} number`);
   }
   return value;
+}
+
+function validateRendererUrlHint(rendererHint) {
+  if (
+    typeof rendererHint !== "string" ||
+    rendererHint.length === 0 ||
+    rendererHint !== rendererHint.trim()
+  ) {
+    throw new TypeError("rendererHint must be a non-empty string");
+  }
+  return rendererHint;
 }
 
 function errorMessage(error) {
@@ -61,15 +265,15 @@ function parseLoopbackWebSocketUrl(value) {
   return parsed;
 }
 
-// WorkBuddy 的 renderer: file:///.../app.asar/renderer/index.html
-function isRendererTarget(target) {
+// renderer 使用客户端专属 host，例如 doubao-chat 或 doubaowork-chat。
+function isRendererTarget(target, rendererHint) {
   if (
     target === null ||
     typeof target !== "object" ||
     Array.isArray(target) ||
     target.type !== "page" ||
     typeof target.url !== "string" ||
-    !target.url.includes(RENDERER_URL_HINT)
+    !target.url.includes(rendererHint)
   ) {
     return false;
   }
@@ -170,11 +374,17 @@ function buildEvaluationError(exceptionDetails) {
   return error;
 }
 
-export function filterRendererTargets(targets) {
+export function filterRendererTargets(
+  targets,
+  { rendererHint = RENDERER_URL_HINT } = {},
+) {
   if (!Array.isArray(targets)) {
     throw new TypeError("renderer targets must be an array");
   }
-  return targets.filter(isRendererTarget).sort(compareTargets);
+  validateRendererUrlHint(rendererHint);
+  return targets
+    .filter((target) => isRendererTarget(target, rendererHint))
+    .sort(compareTargets);
 }
 
 export async function fetchRendererTargets(
@@ -182,10 +392,12 @@ export async function fetchRendererTargets(
   {
     fetchImpl = globalThis.fetch,
     timeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS,
+    rendererHint = RENDERER_URL_HINT,
   } = {},
 ) {
   validatePort(port);
   validateDuration(timeoutMs, "timeoutMs", { allowZero: false });
+  validateRendererUrlHint(rendererHint);
   if (typeof fetchImpl !== "function") {
     throw new TypeError("fetchImpl must be a function");
   }
@@ -238,7 +450,7 @@ export async function fetchRendererTargets(
     throw new Error("malformed renderer target JSON: expected an array");
   }
 
-  return filterRendererTargets(targets);
+  return filterRendererTargets(targets, { rendererHint });
 }
 
 export async function waitForRendererTargets(
@@ -248,11 +460,13 @@ export async function waitForRendererTargets(
     pollMs = DEFAULT_POLL_MS,
     fetchImpl = globalThis.fetch,
     sleep = sleepWithTimer,
+    rendererHint = RENDERER_URL_HINT,
   } = {},
 ) {
   validatePort(port);
   validateDuration(timeoutMs, "timeoutMs", { allowZero: true });
   validateDuration(pollMs, "pollMs", { allowZero: false });
+  validateRendererUrlHint(rendererHint);
   if (typeof sleep !== "function") {
     throw new TypeError("sleep must be a function");
   }
@@ -270,9 +484,10 @@ export async function waitForRendererTargets(
       const targets = await fetchRendererTargets(port, {
         fetchImpl,
         timeoutMs: remainingBudgetMs,
+        rendererHint,
       });
       if (targets.length > 0) return targets;
-      lastError = new Error("no matching renderer/index.html page targets");
+      lastError = new Error(`no matching ${rendererHint} page targets`);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
     }
@@ -294,7 +509,8 @@ export class CdpSession {
   constructor(
     webSocketDebuggerUrl,
     {
-      WebSocketImpl = globalThis.WebSocket,
+      // Node 18/20 无全局 WebSocket 时，回退到内置的 NodeWebSocket，保证 Node 18+ 都能用
+      WebSocketImpl = globalThis.WebSocket ?? NodeWebSocket,
       commandTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
       connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
     } = {},

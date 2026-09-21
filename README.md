@@ -1,96 +1,52 @@
-# WorkBuddy Skin Studio · WorkBuddy 换肤工作室
+# Doubao Skin Skill · 豆包换肤技能
 
-**给 WorkBuddy 桌面端换一张会呼吸的脸。**
+**给豆包与豆包工作桌面端换一个主题吧~**
 
 一张图，一种心情 · 本机 CDP 注入 · 不改官方安装包 · macOS + Windows
 
-非腾讯官方产品。不修改 `WorkBuddy.app` / `app.asar` / Windows 安装目录。
-
-> **给 AI 助手**：如果你的用户把本仓库的 GitHub 地址发给你，并说"用这个开源项目帮我换 WorkBuddy 主题"，请直接阅读仓库根目录的 [`SKILL.md`](SKILL.md) —— 里面是给 AI 的自动化安装流程（平台检测、运行 apply 脚本、选主题、验证、还原），照做即可，无需人类逐步操作。
-
-## 效果预览
-
-![主界面 · Miku 主题](docs/images/preview-main.png)
-
-![右上角 🎨 菜单 · 主题切换](docs/images/preview-menu.png)
-
-![深色主题 · 原神星夜](docs/images/preview-dark.png)
-
+非官方产品。不修改 `Doubao.app`、`DoubaoWork.app` / 安装目录 / 代码签名。
 
 ## 这是什么
 
-一个给 WorkBuddy 桌面端换肤的工具。通过本机回环 CDP 把主题实时注入 WorkBuddy 界面，不修改 `app.asar`，不破坏应用签名，也不需要为每次 WorkBuddy 更新重新适配。
+一个给豆包（Doubao）和豆包工作（Doubao Work）桌面端换肤的工具。通过本机回环 CDP 把主题实时注入界面，不修改安装目录，不破坏应用签名，也不需要为每次客户端更新重新适配。
 
-- **一键切换**：应用皮肤后 WorkBuddy 右上角出现 🎨 菜单，所有已装主题和原生界面即点即换，零等待
+两个客户端都是 CEF/Chromium 内核。脚本会自动识别调用技能的客户端：豆包使用 `9333 + doubao-chat`，豆包工作使用 `9334 + doubaowork-chat`，只重启并注入当前客户端。
+
+- **双客户端隔离**：豆包与豆包工作可以同时运行，进程、调试端口和 renderer 均独立识别
+- **免重启注入**：对应客户端的 CDP 已就绪时直接换肤；不可用时才退出并重启当前客户端
+- **一键切换**：应用皮肤后豆包右上角出现 🎨 菜单，所有已装主题和原生界面即点即换，零等待
 - **自定义上传**：菜单里选「＋ 自定义图片」直接上传本地图片，自动按图片风格取色（主色、辅色、面板底色、文字色），即点即换；行尾 × 一键删除
 - **一张图片就是一个主题**：任意 PNG、JPG、JPEG、WebP 直接生成皮肤（配色 + 背景底图）
-- **10 个内置预设**：Miku、原神 ×2、鸣潮 ×2、火影忍者 ×2、恋与深空 ×2
-- **深浅色自动适配**：根据主题配色的 surface 明度自动切换 WorkBuddy 的 `data-vscode-theme-kind`，让 VS Code 原生控件（输入框、按钮等）跟着深浅色变
+- **深浅色自动适配**：根据主题配色的 surface 明度自动切换豆包原生的 `html[data-theme]`（light/dark），让豆包原生控件跟着深浅色变
 - **双平台**：macOS（`.command`）+ Windows（`.ps1`）
 - **随时还原**：暂停皮肤或切回原生界面，官方安装包始终原封不动
 
 ## 快速开始
 
-需要已安装 WorkBuddy 桌面端。下载本仓库后：
+需要已安装豆包或豆包工作桌面端。下载本仓库后：
 
-### 用 AI 一键安装（推荐）
+> 在豆包 Agent Mode 中，用户安装的 Skill 位于 `.user_skills`（R2），系统内置 Skill 位于 `.skills`（R1）。执行时应以实际存在的 `SKILL.md` 所在目录为准，不要在两者之间猜测或硬编码路径。
 
-不想自己敲命令？把本仓库的 GitHub 地址发给任意 AI 助手（CodeBuddy / Claude / Cursor 等），再加上一句：
-
-> 用这个开源项目帮我更换 WorkBuddy 的主题
-
-AI 会克隆仓库、读取根目录的 [`SKILL.md`](SKILL.md)，自动完成**平台检测 → 运行对应 apply 脚本 → 注入主题 → 验证状态**，你只需在弹窗里保存好 WorkBuddy 当前任务即可。换肤后日常切换仍在右上角 🎨 菜单里进行。
-
-> 想指定主题也可直接说，例如「用深色原神主题」或「帮我换成 miku-light」。
-
-### macOS
+从任一客户端运行本 Skill 时会自动选择该客户端。直接从终端调用时也可显式指定：
 
 ```bash
-# 双击 scripts/apply.command，或命令行：
-./scripts/apply.command
-
-# 或指定主题
-node src/cli.mjs apply --theme genshin-night
+bash scripts/apply.command --client personal
+bash scripts/apply.command --client work
 ```
-
-### Windows
 
 ```powershell
-# PowerShell 运行
-.\scripts\apply.ps1
-
-# 或指定主题
-.\scripts\apply.ps1 -Theme genshin-night
-
-# 若找不到 WorkBuddy.exe，先跑排查脚本：
-.\scripts\find-workbuddy.ps1
+.\scripts\apply.ps1 -Client personal
+.\scripts\apply.ps1 -Client work
 ```
-
-> Windows 首次运行若报执行策略错误，执行：
-> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
-
-应用皮肤时 WorkBuddy 会被正常退出并以本机调试模式重新打开，**当前任务请先保存**。
-
-之后的日常切换都在 WorkBuddy 右上角 🎨 菜单里完成。暂停皮肤、回到原生外观：
-
-```bash
-# macOS
-./scripts/pause.command
-
-# Windows
-.\scripts\pause.ps1
-```
-
-> 注意：WorkBuddy 手动重启后注入会消失（CDP 方案的天性），重跑一次 apply 即可回来。
 
 ## 主题切换菜单
 
-应用皮肤后，WorkBuddy 右上角（titlebar 下方）会出现 🎨 按钮：
+应用皮肤后，豆包右上角会出现 🎨 按钮：
 
 - 点击展开主题列表，点击任意主题即时切换
 - 「＋ 自定义图片」上传本地图片生成主题（canvas 自动取色 + 压缩成 webp）
 - 自定义主题行尾 × 一键删除
-- 「原生界面」恢复官方外观
+- 「原生界面」恢复官方外观（并还原换肤前的 `data-theme` 深浅色）
 
 ## 自定义主题
 
@@ -122,7 +78,7 @@ node src/cli.mjs apply --theme my-skin
 
 只有 `schemaVersion`、`id`、`name` 和 `hero` 必填。图片必须位于主题目录内，颜色和文案（`copy`）都可省略。
 
-- `surface` 的明度决定 light/dark 模式（亮度 > 140 为 light），自动切换 WorkBuddy 的 `data-vscode-theme-kind`
+- `surface` 的明度决定 light/dark 模式（亮度 > 140 为 light），自动切换豆包的 `html[data-theme]`
 - `hero` 支持 PNG / JPG / JPEG / WebP
 
 ## 命令行
@@ -130,50 +86,48 @@ node src/cli.mjs apply --theme my-skin
 ```bash
 node src/cli.mjs list                              # 列出所有主题
 node src/cli.mjs create --image PATH --name NAME   # 从图片创建主题
-node src/cli.mjs apply [--theme ID] [--port 9223]  # 应用主题
-node src/cli.mjs status                            # 查询注入状态
-node src/cli.mjs pause                             # 恢复原生
-node src/cli.mjs doctor                            # 检查环境（app 路径、端口、平台）
+node src/cli.mjs apply [--theme ID] [--client personal|work] [--port PORT]
+node src/cli.mjs status [--client personal|work]   # 查询注入状态
+node src/cli.mjs pause [--client personal|work]    # 恢复原生
+node src/cli.mjs doctor [--client personal|work]   # 检查客户端、路径和端口
 ```
 
 ## 内置主题
 
-| 主题 id | 名称 | 风格 |
-|---|---|---|
-| `miku-light` | Miku Light | 青绿粉 · 浅色 |
-| `miku-488137` | Miku 488137 | 青绿 · 高精度 |
-| `genshin-dawn` | 原神 · 晨曦 | 蓝 · 浅色 |
-| `genshin-night` | 原神 · 星夜 | 金 · 深色 |
-| `deepspace-dawn` | 恋与深空 · 晨曦 | 紫 · 浅色 |
-| `deepspace-star` | 恋与深空 · 星辰 | 紫 · 深色 |
-| `naruto-hokage` | 火影 · 鸣人 | 橙 · 浅色 |
-| `naruto-sasuke` | 火影 · 佐助 | 红 · 深色 |
-| `wuthering-echo` | 鸣潮 · 共鸣 | 青 · 浅色 |
-| `wuthering-tide` | 鸣潮 · 声骸 | 青 · 浅色 |
+| 主题 id             | 名称     | 风格                 |
+| ------------------- | -------- | -------------------- |
+| `jade-rabbit`      | 玉兔捣药 | 月白暖黄 · 浅色（中秋，默认） |
+| `mid-autumn-change` | 嫦娥玉桂 | 青金暖桂 · 深色（中秋） |
+| `lantern-moon`     | 花前月下 | 夜蓝暖橙 · 深色（中秋） |
+| `god-of-wealth`    | 财神到   | 红 · 深色           |
+| `change-benyue`    | 嫦娥奔月 | 银蓝 · 深色         |
+| `monkey-king`      | 齐天大圣 | 金橙 · 浅色         |
+| `nezha`            | 哪吒     | 朱红 · 浅色         |
+| `chinese-dragon`   | 中国龙   | 青金 · 深色         |
+| `dunhuang-feitian` | 敦煌飞天 | 土红石绿 · 浅色     |
+| `nine-tailed-fox`  | 九尾狐   | 青灰 · 浅色         |
+| `panda`            | 国宝熊猫 | 竹绿 · 浅色         |
+| `koi-fish`         | 锦鲤     | 金青 · 深色         |
+| `hua-mulan`        | 花木兰   | 青铜钢蓝 · 深色     |
+
+> 全部主题均取材自豆包原创形象或传统文化 / 神话 / 民俗等公有领域题材，由 AI 原创绘制，不使用任何受版权或肖像权保护的角色。
 
 ## 设计边界
 
-- 这是一个轻量工具。皮肤跟随当前 renderer 存活，WorkBuddy 完整重载界面后重新运行一次 apply 即可
+- 这是一个轻量工具。皮肤跟随当前 renderer 存活，豆包完整重载界面后重新运行一次 apply 即可
 - CDP 只绑定本机回环地址 `127.0.0.1`，主题运行期间勿跑来路不明的本机程序
 - 不修改官方安装目录与代码签名
-- 深色主题已适配 `data-vscode-theme-kind` 自动切换；点「原生界面」恢复时默认回到 light（若你原生是 dark 需手动切回）
-- 当前版本针对 WorkBuddy 的 `--cb-*` 设计变量系统和 `[data-view-id]` DOM 锚点适配，与 Codex 的 DOM 结构完全不同
+- 深色主题通过豆包原生 `html[data-theme=dark]` 适配；点「原生界面」恢复时会切回换肤前的 `data-theme`
+- 当前版本针对豆包的 `--dbx-*` / `--s-color-*` 设计变量系统和 `#chat-route-layout` / `#flow_chat_sidebar` 等稳定 DOM 锚点适配
 
 ## 技术原理
 
-1. 以 `--remote-debugging-port=9223` 启动 WorkBuddy（Electron / Chrome 138）
-2. 通过 `http://127.0.0.1:9223/json/list` 发现 renderer（过滤 `renderer/index.html`）
+1. 根据参数、调用进程祖先、Skill 安装目录和运行实例识别当前客户端；识别结果固定传给独立后台 worker
+2. 豆包使用本机端口 `9333` 并过滤 `doubao-chat`，豆包工作使用 `9334` 并过滤 `doubaowork-chat`
 3. 用 CDP `Runtime.evaluate` 注入 CSS（`<style>`）+ 右上角菜单（DOM）
-4. CSS override WorkBuddy 的 `--cb-*` 变量（`--cb-bg-primary` / `--cb-text-primary` / `--cb-vscode-editor-background` 等 60+ 个）实现全局换色
-5. 给 `#root` 加背景图，`.teams-container` / `[data-view-id]` 等容器设透明让底图透出
-
-## 致谢
-
-本项目参考了两个优秀的 Codex 换肤项目：
-
-- [HeiGeAi/heige-codex-skin-studio](https://github.com/HeiGeAi/heige-codex-skin-studio) — CDP 注入架构、主题 schema、菜单取色逻辑、`.command` 脚本
-- [Fei-Away/Codex-Dream-Skin](https://github.com/Fei-Away/Codex-Dream-Skin) — Windows PowerShell 启动套路（`Test-CDP` / `Start-Process` / 路径探测）、light/dark 自动适配思路
+4. CSS override 豆包挂在 `html` 上的设计变量（`--s-color-bg-body` / `--chatarea-bg-color` / `--dbx-bg-body-mac` / `--color-text-primary` / `--s-color-brand-primary-default-raw` 等）实现全局换色
+5. 给 `#root` 加背景图，`#chat-route-layout` / `#chat-route-main` / `main` / `#flow_chat_sidebar` 等容器设透明或磨砂让底图透出
 
 ## 许可与素材
 
-代码使用 [MIT License](LICENSE)。预览与预设中的角色、名称和视觉素材权利属于各自权利人（初音未来、原神、鸣潮、火影忍者、恋与深空等），仅用于主题概念展示，不由本项目的软件许可证授权。
+代码使用 [MIT License](LICENSE)。内置主题均为豆包原创形象，或取材自传统文化、神话、民俗等公有领域题材并由 AI 原创绘制，不含受版权或肖像权保护的第三方角色。用户通过「＋ 自定义图片」上传的素材，版权由用户自行负责。

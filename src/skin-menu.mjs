@@ -3,15 +3,15 @@ const DEFAULT_ACCENT = "#24c9d7";
 
 // 客户端 CSS 由 Node 端模板加哨兵生成，替换后与内置主题同源，避免两套模板漂移
 export const CSS_SENTINELS = {
-  id: "workbuddy-custom-sentinel-id",
-  hero: "data:image/png;base64,WORKBUDDYHEROSENTINEL",
+  id: "doubao-custom-sentinel-id",
+  hero: "data:image/png;base64,DOUBAOHEROSENTINEL",
   accent: "#010203",
   secondary: "#040506",
   surface: "#070809",
   text: "#0a0b0c",
 };
 
-export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTemplate = "" }) {
+export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTemplate = "", explicit = false }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error("皮肤菜单至少需要一个主题");
   }
@@ -36,7 +36,10 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     cssTemplate,
     sentinels: CSS_SENTINELS,
     customId: "custom-upload",
-    storageKey: "workbuddyCustomTheme",
+    storageKey: "doubaoCustomTheme",
+    // 记住"上一次激活的皮肤"，重启豆包后没显式指定主题时用它恢复
+    activeStorageKey: "doubaoActiveSkin",
+    explicit: Boolean(explicit),
   });
 
   return `(() => {
@@ -52,13 +55,15 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   document.getElementById(data.menuId)?.remove();
   const root = document.createElement("div");
   root.id = data.menuId;
-  root.style.cssText = "position:fixed;top:48px;right:16px;z-index:2147483000;font:500 13px/1.4 system-ui;user-select:none;";
+  // 吸附右边缘、竖直下移到中部偏上（避开顶栏那排产物按钮）；平时半隐藏，hover/展开才滑出
+  root.style.cssText = "position:fixed;top:18%;right:0;z-index:2147483000;font:500 13px/1.4 system-ui;user-select:none;display:flex;flex-direction:column;align-items:flex-end;";
 
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = "\\u{1F3A8}";
-  button.title = "WorkBuddy Skin Studio";
-  button.style.cssText = "display:block;margin-left:auto;width:38px;height:38px;border-radius:50%;border:1px solid rgba(0,0,0,.18);background:rgba(255,255,255,.92);backdrop-filter:blur(10px);box-shadow:0 3px 12px rgba(0,0,0,.24);cursor:pointer;font-size:19px;padding:0;";
+  button.title = "Doubao Skin Studio";
+  // 默认向右藏掉大半、半透明；hover 或菜单展开时滑出并变清晰（见下方 setPeek）
+  button.style.cssText = "display:block;width:38px;height:38px;border-radius:50% 0 0 50%;border:1px solid rgba(0,0,0,.18);border-right:none;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);box-shadow:0 3px 12px rgba(0,0,0,.24);cursor:pointer;font-size:19px;padding:0;transition:transform .22s ease,opacity .22s ease;transform:translateX(62%);opacity:.55;";
 
   const panel = document.createElement("div");
   panel.style.cssText = "display:none;margin-top:8px;min-width:200px;padding:6px;border-radius:12px;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.94);backdrop-filter:blur(16px);box-shadow:0 10px 30px rgba(0,0,0,.18);color:#17344f;";
@@ -79,7 +84,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     text.textContent = label;
     item.append(dot, text);
     item.addEventListener("mouseenter", () => { if (item.style.fontWeight !== "700") item.style.background = "rgba(0,0,0,.05)"; });
-    item.addEventListener("mouseleave", () => paint(document.documentElement.dataset.workbuddySkin ?? null));
+    item.addEventListener("mouseleave", () => paint(document.documentElement.dataset.doubaoSkin ?? null));
     item.addEventListener("click", () => onPick(item));
     if (before) panel.insertBefore(item, before); else panel.appendChild(item);
     return item;
@@ -91,33 +96,34 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     const v = parseInt(m[1], 16);
     return (0.299 * ((v >> 16) & 255) + 0.587 * ((v >> 8) & 255) + 0.114 * (v & 255)) > 140;
   };
-  // 同步切换 WorkBuddy 的 VS Code 主题模式，让原生控件（输入框/按钮等）跟着深浅色变
+  // 记住换肤前豆包原生的 data-theme，点「原生界面」时还原
+  const html = document.documentElement;
+  const nativeTheme = html.dataset.doubaoSkinNativeTheme ?? (html.dataset.doubaoSkinNativeTheme = html.getAttribute("data-theme") || "light");
+  // 同步切换豆包原生的深浅色（html[data-theme]），让原生控件跟着 surface 明度走
   const applyMode = (surface) => {
     const dark = !isLightSurface(surface);
-    const body = document.body;
-    const html = document.documentElement;
-    body.dataset.vscodeThemeKind = dark ? "vscode-dark" : "vscode-light";
-    body.dataset.vscodeThemeName = dark ? "IDE Dark" : "IDE Light";
+    html.setAttribute("data-theme", dark ? "dark" : "light");
     html.style.colorScheme = dark ? "dark" : "light";
-    ["light", "vscode-light", "cb-light", "dark", "vscode-dark", "cb-dark"].forEach((cls) => {
-      const isDarkCls = cls === "dark" || cls === "vscode-dark" || cls === "cb-dark";
-      body.classList.toggle(cls, dark ? isDarkCls : !isDarkCls);
-      html.classList.toggle(cls, dark ? isDarkCls : !isDarkCls);
-    });
+  };
+  const restoreMode = () => {
+    html.setAttribute("data-theme", nativeTheme);
+    html.style.colorScheme = nativeTheme === "dark" ? "dark" : "light";
   };
   const setTheme = (id) => {
     const theme = data.themes.find((candidate) => candidate.id === id);
     if (!theme) return;
     style.textContent = theme.css;
-    document.documentElement.dataset.workbuddySkin = theme.id;
+    html.dataset.doubaoSkin = theme.id;
     applyMode(theme.surface);
     paint(theme.id);
+    saveActive(theme.id);
   };
   const clearTheme = () => {
     style.textContent = "";
-    delete document.documentElement.dataset.workbuddySkin;
-    applyMode("#ffffff");
+    delete html.dataset.doubaoSkin;
+    restoreMode();
     paint(null);
+    saveActive(null);
   };
 
   for (const theme of data.themes) {
@@ -125,27 +131,84 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   }
 
   // ---- 自定义图片：本地选图 -> 压缩 -> 取色 -> 生成 CSS -> 持久化 ----
-  const buildCustomCss = (dataUrl, colors) => data.cssTemplate
-    .split(data.sentinels.hero).join(dataUrl)
-    .split(data.sentinels.accent).join(colors.accent)
-    .split(data.sentinels.secondary).join(colors.secondary)
-    .split(data.sentinels.surface).join(colors.surface)
-    .split(data.sentinels.text).join(colors.text)
-    .split(data.sentinels.id).join(data.customId);
-
   const hex = (r, g, b) => "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
+  const rgb = (value) => {
+    const match = /^#([0-9a-f]{6})$/i.exec(value || "");
+    if (!match) return [0, 0, 0];
+    const parsed = parseInt(match[1], 16);
+    return [(parsed >> 16) & 255, (parsed >> 8) & 255, parsed & 255];
+  };
   const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  const linear = (channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (value) => {
+    const [r, g, b] = value.map(linear);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => {
+    const lighter = Math.max(luminance(a), luminance(b));
+    const darker = Math.min(luminance(a), luminance(b));
+    return (lighter + 0.05) / (darker + 0.05);
+  };
+  const readableText = (background) => {
+    const dark = [15, 23, 42];
+    const light = [248, 250, 252];
+    return contrast(dark, background) >= contrast(light, background) ? dark : light;
+  };
+  const ensureContrast = (foreground, background, minimum) => {
+    if (contrast(foreground, background) >= minimum) return foreground;
+    const target = readableText(background);
+    let adjusted = foreground;
+    for (let i = 0; i < 12 && contrast(adjusted, background) < minimum; i += 1) {
+      adjusted = mix(adjusted, target, 0.18);
+    }
+    return adjusted;
+  };
+  const accessibleAccent = (accent, surface) => {
+    let adjusted = ensureContrast(accent, surface, 3);
+    let onAccent = readableText(adjusted);
+    const target = onAccent[0] > 128 ? [0, 0, 0] : [255, 255, 255];
+    for (let i = 0; i < 12 && contrast(onAccent, adjusted) < 4.5; i += 1) {
+      adjusted = mix(adjusted, target, 0.12);
+      onAccent = readableText(adjusted);
+    }
+    return adjusted;
+  };
+  const raw = (value) => rgb(value).map(Math.round).join(", ");
+
+  // CSS 模板里不仅有 #rrggbb，还有 Node 端提前生成的 "r, g, b" 与 rgba(r,g,b,a)。
+  // 过去只替换 hex，导致自定义主题残留哨兵色 rgba(10,11,12,*)，产生深底黑字。
+  const replaceColor = (css, sentinel, value) => css
+    .split(sentinel).join(value)
+    .split(raw(sentinel)).join(raw(value));
+  const buildCustomCss = (dataUrl, colors) => {
+    let css = data.cssTemplate
+      .split(data.sentinels.hero).join(dataUrl)
+      .split(data.sentinels.id).join(data.customId);
+    for (const key of ["accent", "secondary", "surface", "text"]) {
+      css = replaceColor(css, data.sentinels[key], colors[key]);
+    }
+    const accent = rgb(colors.accent);
+    const accentHover = mix(accent, [0, 0, 0], 0.15);
+    const onAccent = readableText(accent);
+    return css + "\\nhtml {"
+      + "--db-on-accent:" + hex(...onAccent) + " !important;"
+      + "--s-color-brand-primary-hover-raw:" + accentHover.map(Math.round).join(", ") + " !important;"
+      + "}";
+  };
 
   const extractPalette = (canvas) => {
     const ctx = canvas.getContext("2d");
     const { data: px } = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const buckets = new Map();
-    let lumSum = 0, count = 0;
+    const luminances = [];
     for (let i = 0; i < px.length; i += 4) {
       const r = px[i], g = px[i + 1], b = px[i + 2];
       const max = Math.max(r, g, b), min = Math.min(r, g, b);
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      lumSum += lum; count += 1;
+      luminances.push(lum);
       const sat = max === 0 ? 0 : (max - min) / max;
       if (sat < 0.18 || lum < 24 || lum > 245) continue;   // 灰、过暗、过曝不参与取主色
       const d = max - min || 1;
@@ -156,15 +219,19 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
       entry.w += weight; entry.r += r * weight; entry.g += g * weight; entry.b += b * weight;
       buckets.set(bucket, entry);
     }
-    const avgLum = count ? lumSum / count : 128;
     const ranked = [...buckets.values()].sort((a, b2) => b2.w - a.w)
       .map((e) => ({ rgb: [e.r / e.w, e.g / e.w, e.b / e.w], h: e.h, w: e.w }));
-    const accent = ranked[0]?.rgb ?? [36, 201, 215];
-    const second = ranked.find((e) => Math.abs(e.h - (ranked[0]?.h ?? 0)) > 50)?.rgb
-      ?? mix(accent, [255, 255, 255], 0.35);
-    const light = avgLum > 128;
-    const surface = light ? mix(accent, [252, 252, 255], 0.92) : mix(accent, [12, 12, 18], 0.86);
-    const text = light ? mix(accent, [16, 24, 40], 0.82) : mix(accent, [244, 246, 252], 0.85);
+    luminances.sort((a, b) => a - b);
+    const median = luminances[Math.floor(luminances.length / 2)] ?? 128;
+    const average = luminances.reduce((sum, value) => sum + value, 0) / Math.max(1, luminances.length);
+    const light = median > 148 || average > 170;
+    const baseSurface = light ? [248, 250, 252] : [15, 17, 24];
+    const surface = mix(baseSurface, ranked[0]?.rgb ?? [36, 201, 215], light ? 0.06 : 0.1);
+    const accent = accessibleAccent(ranked[0]?.rgb ?? [36, 201, 215], surface);
+    const secondSource = ranked.find((e) => Math.abs(e.h - (ranked[0]?.h ?? 0)) > 50)?.rgb
+      ?? mix(accent, readableText(surface), 0.35);
+    const second = ensureContrast(secondSource, surface, 3);
+    const text = readableText(surface);
     return {
       accent: hex(...accent),
       secondary: hex(...second),
@@ -173,25 +240,50 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     };
   };
 
+  const normalizePalette = (colors) => {
+    const surface = rgb(colors.surface);
+    const text = ensureContrast(rgb(colors.text), surface, 7);
+    const accent = accessibleAccent(rgb(colors.accent), surface);
+    const secondary = ensureContrast(rgb(colors.secondary), surface, 3);
+    return {
+      accent: hex(...accent),
+      secondary: hex(...secondary),
+      surface: hex(...surface),
+      text: hex(...text),
+    };
+  };
+
   const applyCustomTheme = (theme) => {
-    style.textContent = buildCustomCss(theme.dataUrl, theme.colors);
-    document.documentElement.dataset.workbuddySkin = data.customId;
-    applyMode(theme.colors.surface);
-    ensureCustomRow(theme);
+    const normalized = {
+      ...theme,
+      colors: normalizePalette(theme.colors),
+      paletteVersion: 2,
+    };
+    style.textContent = buildCustomCss(normalized.dataUrl, normalized.colors);
+    document.documentElement.dataset.doubaoSkin = data.customId;
+    applyMode(normalized.colors.surface);
+    ensureCustomRow(normalized);
     paint(data.customId);
+    saveCustom(normalized);
+    saveActive(data.customId);
   };
 
   let customRow = null;
   const deleteCustom = () => {
     try { localStorage.removeItem(data.storageKey); } catch {}
-    if (document.documentElement.dataset.workbuddySkin === data.customId) clearTheme();
+    if (document.documentElement.dataset.doubaoSkin === data.customId) clearTheme();
     customRow?.remove();
     rows.delete(data.customId);
     customRow = null;
   };
   const ensureCustomRow = (theme) => {
     if (customRow) { customRow.querySelector("span + span").textContent = theme.name; customRow.firstChild.style.background = theme.colors.accent; return; }
-    customRow = row(theme.name, theme.colors.accent, () => { applyCustomTheme(loadCustom() ?? theme); panel.style.display = "none"; }, uploadRow);
+    customRow = row(theme.name, theme.colors.accent, () => {
+      const saved = loadCustom() ?? theme;
+      if (saved.paletteVersion === 2) applyCustomTheme(saved);
+      else importFromDataUrl(saved.dataUrl, saved.name);
+      panel.style.display = "none";
+    }, uploadRow);
     const text = customRow.querySelector("span + span");
     text.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     const del = document.createElement("span");
@@ -213,7 +305,20 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   };
   const saveCustom = (theme) => {
     try { localStorage.setItem(data.storageKey, JSON.stringify(theme)); }
-    catch (error) { console.warn("WorkBuddy Skin：自定义主题图片过大，本次生效但重启后不保留", error); }
+    catch (error) { console.warn("Doubao Skin：自定义主题图片过大，本次生效但重启后不保留", error); }
+  };
+  // 记住/读取"上一次激活的皮肤"。三态：
+  //   key 不存在 = 从未设置（首次 apply 用命令给的默认主题）
+  //   NATIVE_MARK = 用户上次主动选了"原生界面"（重启后保持原生，不打扰）
+  //   其它 = 内置主题 id 或自定义 customId
+  const NATIVE_MARK = "__native__";
+  const saveActive = (id) => {
+    try { localStorage.setItem(data.activeStorageKey, id === null ? NATIVE_MARK : id); }
+    catch {}
+  };
+  const loadActive = () => {
+    try { return localStorage.getItem(data.activeStorageKey); }
+    catch { return null; }
   };
 
   const importFromDataUrl = (dataUrl, name) => new Promise((resolve, reject) => {
@@ -231,8 +336,8 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
         name: name || "\\u6211\\u7684\\u56fe\\u7247",
         dataUrl: full.toDataURL("image/webp", 0.8),
         colors: extractPalette(sample),
+        paletteVersion: 2,
       };
-      saveCustom(theme);
       applyCustomTheme(theme);
       resolve(theme.colors);
     };
@@ -263,17 +368,50 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   const saved = loadCustom();
   if (saved) ensureCustomRow(saved);
 
+  // 半隐藏/滑出控制：hover 或菜单展开时按钮完全露出，否则缩回右边缘只留一小条
+  const setPeek = (out) => {
+    button.style.transform = out ? "translateX(0)" : "translateX(62%)";
+    button.style.opacity = out ? "1" : ".55";
+  };
+  const isOpen = () => panel.style.display !== "none";
+  root.addEventListener("mouseenter", () => setPeek(true));
+  root.addEventListener("mouseleave", () => { if (!isOpen()) setPeek(false); });
+
   button.addEventListener("click", () => {
-    panel.style.display = panel.style.display === "none" ? "block" : "none";
+    const open = !isOpen();
+    panel.style.display = open ? "block" : "none";
+    setPeek(true);                     // 展开时保持露出；收起后交给 mouseleave 决定
+    if (!open) setPeek(false);
   });
 
   root.append(button, panel, picker);
   document.body.appendChild(root);
-  if (data.activeId === null) clearTheme();
-  else setTheme(data.activeId);
+  // 决定初始显示哪张皮肤：
+  // - explicit（命令显式 apply --theme X）：严格用 activeId，保留"指定主题"语义
+  // - 否则（裸 apply，含豆包重启后自动恢复）：优先恢复上一次激活的皮肤
+  const startup = () => {
+    if (!data.explicit) {
+      const last = loadActive();               // null=从未设置，NATIVE_MARK=上次选原生，其它=主题 id
+      if (last === NATIVE_MARK) { clearTheme(); return; }
+      if (last === data.customId) {
+        const savedCustom = loadCustom();
+        if (savedCustom) {
+          if (savedCustom.paletteVersion === 2) applyCustomTheme(savedCustom);
+          else importFromDataUrl(savedCustom.dataUrl, savedCustom.name);
+          return;
+        }
+      } else if (last && data.themes.some((theme) => theme.id === last)) {
+        setTheme(last);
+        return;
+      }
+    }
+    if (data.activeId === null) clearTheme();
+    else setTheme(data.activeId);
+  };
+  startup();
 
-  // 供脚本化调用与测试：window.__workbuddySkin.importFromDataUrl(dataUrl, name)
-  window.__workbuddySkin = { importFromDataUrl, setTheme, clearTheme, deleteCustom };
+  // 供脚本化调用与测试：window.__doubaoSkin.importFromDataUrl(dataUrl, name)
+  window.__doubaoSkin = { importFromDataUrl, setTheme, clearTheme, deleteCustom };
   return true;
 })()`;
 }

@@ -1,10 +1,10 @@
 {
-  "name": "workbuddy-skin-studio",
-  "version": "1.0.0",
+  "name": "doubao-skin-studio",
+  "version": "2.8.0",
   "private": true,
   "type": "module",
   "bin": {
-    "workbuddy-skin": "src/cli.mjs"
+    "doubao-skin": "src/cli.mjs"
   },
   "scripts": {
     "test": "node --test",
