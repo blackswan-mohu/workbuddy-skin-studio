@@ -11,10 +11,10 @@
 .PARAMETER DoubaoExe
   显式指定 Doubao.exe 路径（覆盖自动探测）
 .PARAMETER Theme
-  指定主题 id（默认用 miku-light）
+  指定主题 id（默认用 jade-rabbit）
 .EXAMPLE
   .\apply.ps1
-  .\apply.ps1 -Theme genshin-night
+  .\apply.ps1 -Theme chinese-dragon
   .\apply.ps1 -DoubaoExe "D:\apps\Doubao\Doubao.exe"
 #>
 [CmdletBinding()]
@@ -66,6 +66,8 @@ function Get-ClientConfig([string]$ClientId) {
       InstallDirectory = 'DoubaoWork'
       EnvironmentVariable = 'DOUBAO_WORK_EXE'
       Port = 9334
+      # 候选调试端口：新版豆包 aha-runtime 会抢占 9334 只暴露 node 端点，逐个换干净端口
+      CandidatePorts = @(9334, 9344, 9345, 9346, 9347)
       RendererHint = 'doubaowork-chat'
     }
   }
@@ -77,6 +79,7 @@ function Get-ClientConfig([string]$ClientId) {
     InstallDirectory = 'Doubao'
     EnvironmentVariable = 'DOUBAO_EXE'
     Port = 9333
+    CandidatePorts = @(9333, 9335, 9336, 9337, 9338)
     RendererHint = 'doubao-chat'
   }
 }
@@ -139,7 +142,17 @@ Write-Host "Client: $($config.Name)"
 Write-Host "Node: $node"
 Write-Host "Port: $Port"
 
-if (Test-CDP $Port $config.RendererHint) {
+# 候选端口列表：用户显式 -Port 时只用它；否则用客户端的候选端口组（应对 aha-runtime 抢占）
+$candidatePorts = if ($PSBoundParameters.ContainsKey('Port') -and $Port -ne 0) { @($Port) } else { $config.CandidatePorts }
+
+# 1) 免重启快速路径：任一候选端口已有可注入 renderer，直接用它
+$readyPort = 0
+foreach ($p in $candidatePorts) {
+  if (Test-CDP $p $config.RendererHint) { $readyPort = $p; break }
+}
+
+if ($readyPort -ne 0) {
+  $Port = $readyPort
   Write-Host "CDP 已就绪（端口 $Port），直接注入，无需重启豆包"
 } else {
   $exe = Find-DoubaoExe $config
@@ -151,14 +164,29 @@ if (Test-CDP $Port $config.RendererHint) {
   Write-Host "CDP 未就绪，退出$($config.Name)并以调试模式重启（当前对话请先保存）..."
   Get-Process $config.ProcessName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 2
-  Write-Host "以 CDP 调试模式启动（端口 $Port）..."
-  Start-Process -FilePath $exe -ArgumentList "--remote-debugging-address=127.0.0.1","--remote-debugging-port=$Port"
-  $deadline = (Get-Date).AddSeconds(30)
-  while (-not (Test-CDP $Port $config.RendererHint)) {
-    if ((Get-Date) -ge $deadline) { Write-Error "CDP 在 30 秒内未就绪"; exit 1 }
-    Start-Sleep -Milliseconds 400
+
+  # 2) 逐个候选端口尝试：带该端口重启→等出现可注入 page renderer→锁定；
+  #    新版 aha-runtime 会占用 9333/9334 只暴露 node 端点，遇到就换下一个干净端口。
+  $Port = 0
+  foreach ($cand in $candidatePorts) {
+    Write-Host "以 CDP 调试模式启动（尝试端口 $cand）..."
+    Start-Process -FilePath $exe -ArgumentList "--remote-debugging-address=127.0.0.1","--remote-debugging-port=$cand"
+    $deadline = (Get-Date).AddSeconds(25)
+    $ok = $false
+    while ((Get-Date) -lt $deadline) {
+      if (Test-CDP $cand $config.RendererHint) { $ok = $true; break }
+      Start-Sleep -Milliseconds 400
+    }
+    if ($ok) { $Port = $cand; Write-Host "renderer 就绪（端口 $Port）"; break }
+    Write-Host "端口 $cand 未出现 renderer（可能被 aha-runtime 占用），换下一个..."
+    Get-Process $config.ProcessName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
   }
-  Write-Host "CDP 就绪"
+
+  if ($Port -eq 0) {
+    Write-Error "所有候选端口均未拿到 renderer，换肤失败。候选：$($candidatePorts -join ', ')"
+    exit 1
+  }
 }
 
 Write-Host "应用皮肤..."

@@ -51,8 +51,29 @@ function Find-Node {
   return $null
 }
 
+function Test-CDP([int]$P, [string]$RendererHint) {
+  try {
+    $r = Invoke-RestMethod "http://127.0.0.1:$P/json/list" -TimeoutSec 1
+    return [bool]($r | Where-Object { $_.type -eq 'page' -and $_.url -like "*$RendererHint*" })
+  } catch { return $false }
+}
+
 $clientId = Resolve-DoubaoClient
-if ($Port -eq 0) { $Port = if ($clientId -eq 'work') { 9334 } else { 9333 } }
+$rendererHint = if ($clientId -eq 'work') { 'doubaowork-chat' } else { 'doubao-chat' }
+
+# 皮肤可能被注入在非默认端口（新版 aha-runtime 占用 9333/9334 时 apply 会自动换端口）。
+# 用户显式 -Port 时只用它；否则遍历候选端口，挑一个真正暴露 renderer 的来还原。
+if ($PSBoundParameters.ContainsKey('Port') -and $Port -ne 0) {
+  $candidatePorts = @($Port)
+} elseif ($clientId -eq 'work') {
+  $candidatePorts = @(9334, 9344, 9345, 9346, 9347)
+} else {
+  $candidatePorts = @(9333, 9335, 9336, 9337, 9338)
+}
+$Port = $candidatePorts[0]
+foreach ($p in $candidatePorts) {
+  if (Test-CDP $p $rendererHint) { $Port = $p; break }
+}
 if ($Port -lt 1024 -or $Port -gt 65535) {
   Write-Error "Port 必须是 1024 到 65535 的整数"
   exit 1

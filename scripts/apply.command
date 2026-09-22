@@ -2,10 +2,13 @@
 # Doubao Skin Studio — 自动识别豆包客户端，按需重启并注入皮肤。
 #
 # 关键设计：本 skill 会分发给用户，由豆包或豆包工作客户端里的 agent 调用。
-# 一旦关闭发起调用的客户端，agent 及其 shell 会被一起终止，所以真正的
-# 「关闭客户端→带端口重启→注入」必须放进一个脱离当前 session 的
-# 独立后台进程（perl fork+setsid 守护化），launcher 派生它后立刻返回。
-# 这样即便杀豆包连累了 agent，worker 仍在独立 session 里把皮肤装回来。
+# 「关闭客户端→带调试端口重启→注入」放进一个后台 worker，launcher 派生它后立刻返回。
+#
+# 为什么 worker 不脱离会话（不用 setsid）：macOS 的 GUI app 必须在用户会话（Aqua）
+# 上下文里才能被 `open` 正常拉起。若把 worker setsid 到独立 session，`open -na` 会
+# 「返回 0 但豆包实际不启动」（直接执行二进制在独立 session 里同样起不来 renderer）。
+# 所以 worker 留在会话内，用 `open -na` 启动带调试端口的豆包——豆包由 launchd 托管，
+# 一旦拉起就独立于 worker，worker 即便被连累退出，豆包与已注入皮肤都不受影响。
 
 set -e
 
@@ -95,14 +98,16 @@ if [ "$WORKER_MODE" = "1" ]; then
 
     # 2) 逐个候选端口尝试：带该端口重启→等出现真正的 page renderer→锁定
     #    新版 aha-runtime 会占用 9333/9334 只暴露 node 端点，遇到就换下一个干净端口。
+    #    启动方式用 `open -na`（走 LaunchServices），而非直接执行二进制：实测前者
+    #    ~2s 就能初始化出可注入的 GUI renderer，后者要 ~9s 且更易在竞争窗口里超时。
+    #    注意：`open -na` 有单实例拦截——必须先彻底退出豆包（上面已 quit+pkill）才生效。
     PORT=""
     for cand in $CANDIDATE_PORTS; do
       echo "带调试端口重启$DOUBAO_CLIENT_NAME（尝试端口 $cand）..."
-      nohup "$BIN" --remote-debugging-address=127.0.0.1 --remote-debugging-port="$cand" \
-        >"$CDP_LOG" 2>&1 </dev/null &
-      disown
+      open -na "$APP" --args --remote-debugging-address=127.0.0.1 --remote-debugging-port="$cand" \
+        >"$CDP_LOG" 2>&1 || true
       echo "等待端口 $cand 出现 renderer..."
-      for i in $(seq 1 20); do
+      for i in $(seq 1 25); do
         if port_has_renderer "$cand"; then PORT="$cand"; break; fi
         sleep 1
       done
@@ -136,12 +141,36 @@ echo "已识别调用客户端：$DOUBAO_CLIENT_NAME"
 echo "即将自动重启$DOUBAO_CLIENT_NAME并加载皮肤，约几秒后完成（应用会短暂关闭再打开）。"
 echo "请先保存$DOUBAO_CLIENT_NAME里未保存的内容。"
 
-# perl fork+setsid：把 worker 送进全新 session，脱离当前 agent/shell 的进程组，
-# 这样稍后 kill 豆包连累了 agent 也波及不到 worker。macOS 无 setsid 命令，用 perl。
-DOUBAO_RESTART_DELAY="${DOUBAO_RESTART_DELAY:-3}" \
-  nohup perl -e 'use POSIX qw(setsid); exit if fork; setsid; exec @ARGV;' \
-    bash "$SELF" --worker "$DOUBAO_CLIENT_ID" "$@" >"$LOG" 2>&1 </dev/null &
-disown
+# 通过独立 Terminal 派生 worker，launcher 立即返回。
+# 为什么用 Terminal 而不是 nohup/setsid：换肤要同时满足两个约束——
+#   (1) worker 必须存活：关豆包会连累发起命令的 agent 及其子进程；
+#   (2) worker 必须能启动 GUI 豆包：macOS 下 `open` 只在用户会话（Aqua）上下文里有效。
+# nohup 的子进程仍在 agent 进程树内（关豆包被连累）；setsid 脱离了会话（GUI 起不来）——
+# 两者互斥。而 Terminal.app 既不在 agent 进程树内、本身又是有完整会话上下文的 GUI 应用，
+# 一举满足两个约束：worker 在 Terminal 里独立存活，且能正常 `open` 拉起带调试端口的豆包。
+# 注：首次会弹一次「豆包想控制 Terminal」的自动化授权，允许一次即可。
+BOOT="/tmp/doubao-skin-boot-${DOUBAO_CLIENT_ID}.sh"
+{
+  echo '#!/bin/bash'
+  echo "export DOUBAO_RESTART_DELAY=${DOUBAO_RESTART_DELAY:-3}"
+  # 用 %q 逐个转义参数，安全承载 worker 命令与透传的 --theme 等参数
+  printf 'bash %q --worker %q' "$SELF" "$DOUBAO_CLIENT_ID"
+  for arg in "$@"; do printf ' %q' "$arg"; done
+  printf ' >%q 2>&1\n' "$LOG"
+  # 跑完自动关掉这个临时 Terminal 窗口，不打扰用户
+  echo 'osascript -e "tell application \"Terminal\" to close (every window whose name contains \"doubao-skin-boot\")" >/dev/null 2>&1 || true'
+} > "$BOOT"
+chmod +x "$BOOT"
+
+if osascript -e "tell application \"Terminal\" to do script \"bash '$BOOT'\"" >/dev/null 2>&1; then
+  : # 已在独立 Terminal 中启动 worker
+else
+  # 极端兜底：Terminal 不可用（如无 GUI）时退回 nohup（可能遇到上述约束冲突，仅作最后手段）
+  echo "（Terminal 不可用，退回后台方式）" >&2
+  DOUBAO_RESTART_DELAY="${DOUBAO_RESTART_DELAY:-3}" \
+    nohup bash "$SELF" --worker "$DOUBAO_CLIENT_ID" "$@" >"$LOG" 2>&1 </dev/null &
+  disown
+fi
 
 echo "已在后台开始换肤。$DOUBAO_CLIENT_NAME重启后右上角会出现 🎨 按钮。"
 echo "如需排查，请查看 $LOG。"
