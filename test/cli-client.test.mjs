@@ -21,7 +21,7 @@ function dependencies(overrides = {}) {
   };
 }
 
-test("work client selects its isolated port and renderer", async () => {
+test("work client selects its isolated port, renderer, and default theme", async () => {
   let received;
   await runCli(
     ["apply", "--client", "work"],
@@ -35,6 +35,7 @@ test("work client selects its isolated port and renderer", async () => {
 
   assert.equal(received.port, 9334);
   assert.equal(received.rendererHint, "doubaowork-chat");
+  assert.equal(received.loadedTheme.manifest.id, "jade-rabbit");
 });
 
 test("personal client remains the default", async () => {

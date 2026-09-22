@@ -21,6 +21,24 @@
 - **双平台**：macOS（`.command`）+ Windows（`.ps1`）
 - **随时还原**：暂停皮肤或切回原生界面，官方安装包始终原封不动
 
+## 一句话安装（推荐）
+
+本 skill 由豆包 / 豆包工作里的 Agent 直接调用。安装 = 把它放进客户端的 `.user_skills` 目录。两种方式任选：
+
+**A. 在豆包 / 豆包工作里对 Agent 说一句话**（最省事，Agent 自己就能跑 git 和 shell）：
+
+> 从 `https://github.com/OWNER/doubao-skin` 把 doubao-skin 装到我的 user_skills 目录，然后给这个客户端换肤
+
+**B. 在终端跑一键脚本**（会自动定位所有豆包 / 豆包工作 workspace 并安装）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/doubao-skin/main/install.sh | bash
+```
+
+装好后，之后每次只要在客户端里说「帮我换肤」即可，无需再安装。
+
+> 把上面的 `OWNER` 换成你的 GitHub 用户名 / 组织名。
+
 ## 快速开始
 
 需要已安装豆包或豆包工作桌面端。下载本仓库后：
