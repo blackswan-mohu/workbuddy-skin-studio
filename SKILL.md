@@ -80,6 +80,8 @@ author: 飞书AI Builder 姜犇
 
 > **客户端如何识别**：优先读取 `--client` / `DOUBAO_CLIENT`，再检查调用进程祖先、技能安装目录（`.doubao` / `.doubaowork`）和唯一运行实例。识别结果会固定传给后台 worker。普通版使用 `9333 + doubao-chat`，工作版使用 `9334 + doubaowork-chat`，两端同时运行也不会串应用。
 
+> **端口自动探测（应对新版 aha-runtime）**：新版豆包的 `aha-runtime`（承载 Agent 的 node 运行时）会抢占 `9333/9334`，在这些端口上只暴露 `[node]` 端点、没有 `[page]` renderer，导致注入拿不到 target。worker 因此不再死守单一端口：它按候选端口（普通版 `9333 9335 9336 9337 9338`、工作版 `9334 9344 9345 9346 9347`）逐个带调试端口重启客户端，并校验该端口 `/json/list` 是否出现 `type=page` 且 URL 含 renderer hint 的真实 target，命中即锁定注入，否则换下一个。可用 `DOUBAO_CDP_PORTS="9334 9401 9402"` 覆盖候选列表。`pause` 也会遍历候选端口找到已注入皮肤的那个来还原。
+
 > **为什么关掉客户端后还能自动装回皮肤**：这个 skill 由客户端里的 agent 调用，一旦关闭客户端，发起命令的 agent 也会被终止。所以脚本先派生一个**脱离当前 session 的独立后台进程**（`perl fork+setsid`，PPID 归 1），由它延迟几秒后关闭已识别的客户端、带对应端口重启并注入。进度日志分别位于 `/tmp/doubao-skin-apply-personal.log` 和 `/tmp/doubao-skin-apply-work.log`。这些日志仅供事后人工排查，**Agent 不要 `cat` / `tail -f` 跟随它们**——后台 worker 持有其写句柄，跟随会导致命令行挂起。核验换肤是否成功一律用 `node src/cli.mjs status`。
 
 ## 还原原生

@@ -41,9 +41,34 @@ find_node() {
 }
 NODE="$(find_node)"
 
+# 候选调试端口：新版豆包的 aha-runtime(承载 Agent 的 node 运行时)会抢占 9333/9334，
+# 在这些端口上只暴露 [node] 端点、没有 [page] renderer，导致注入拿不到 target。
+# 这里准备一组候选端口，逐个尝试；client 各自偏移，避免两端串用同一端口。
+if [ "$DOUBAO_CLIENT_ID" = "work" ]; then
+  CANDIDATE_PORTS="${DOUBAO_CDP_PORTS:-9334 9344 9345 9346 9347}"
+else
+  CANDIDATE_PORTS="${DOUBAO_CDP_PORTS:-9333 9335 9336 9337 9338}"
+fi
+
+# 校验某端口上是否有「真正的 renderer page target」（不是 aha-runtime 的 node 端点）。
+# 关键：必须同时满足 type=page 且 url 含客户端专属 hint，才算可注入。
+port_has_renderer() {
+  local p="$1"
+  curl -s --max-time 1 "http://127.0.0.1:$p/json/list" 2>/dev/null |
+    "$NODE" -e '
+      let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+        try{
+          const a=JSON.parse(s);
+          const hint=process.argv[1];
+          const ok=Array.isArray(a)&&a.some(t=>t&&t.type==="page"&&typeof t.url==="string"&&t.url.includes(hint));
+          process.exit(ok?0:1);
+        }catch(e){process.exit(1);}
+      });
+    ' "$DOUBAO_RENDERER_HINT" 2>/dev/null
+}
+
 cdp_ready() {
-  curl -s --max-time 1 "http://127.0.0.1:$PORT/json/list" 2>/dev/null |
-    grep -Fq "$DOUBAO_RENDERER_HINT"
+  port_has_renderer "$PORT"
 }
 
 # ============ worker：真正干活的独立进程 ============
@@ -52,7 +77,14 @@ if [ "$WORKER_MODE" = "1" ]; then
   echo "[$(date '+%H:%M:%S')] worker 启动，目标：$DOUBAO_CLIENT_NAME，${DELAY}s 后开始换肤"
   sleep "$DELAY"
 
-  if cdp_ready; then
+  # 1) 免重启快速路径：若任一候选端口已暴露 renderer，直接用它注入
+  READY_PORT=""
+  for cand in $CANDIDATE_PORTS; do
+    if port_has_renderer "$cand"; then READY_PORT="$cand"; break; fi
+  done
+
+  if [ -n "$READY_PORT" ]; then
+    PORT="$READY_PORT"
     echo "CDP 已就绪（端口 $PORT），直接注入，无需重启"
   else
     echo "关闭$DOUBAO_CLIENT_NAME..."
@@ -61,13 +93,32 @@ if [ "$WORKER_MODE" = "1" ]; then
     pkill -f "$BIN" 2>/dev/null || true
     sleep 2
 
-    echo "带调试端口重启$DOUBAO_CLIENT_NAME（端口 $PORT）..."
-    nohup "$BIN" --remote-debugging-address=127.0.0.1 --remote-debugging-port="$PORT" \
-      >"$CDP_LOG" 2>&1 </dev/null &
-    disown
+    # 2) 逐个候选端口尝试：带该端口重启→等出现真正的 page renderer→锁定
+    #    新版 aha-runtime 会占用 9333/9334 只暴露 node 端点，遇到就换下一个干净端口。
+    PORT=""
+    for cand in $CANDIDATE_PORTS; do
+      echo "带调试端口重启$DOUBAO_CLIENT_NAME（尝试端口 $cand）..."
+      nohup "$BIN" --remote-debugging-address=127.0.0.1 --remote-debugging-port="$cand" \
+        >"$CDP_LOG" 2>&1 </dev/null &
+      disown
+      echo "等待端口 $cand 出现 renderer..."
+      for i in $(seq 1 20); do
+        if port_has_renderer "$cand"; then PORT="$cand"; break; fi
+        sleep 1
+      done
+      if [ -n "$PORT" ]; then
+        echo "renderer 就绪（端口 $PORT）"
+        break
+      fi
+      echo "端口 $cand 未出现 renderer（可能被 aha-runtime 占用），换下一个..."
+      pkill -f "$BIN" 2>/dev/null || true
+      sleep 2
+    done
 
-    echo "等待 CDP 就绪..."
-    for i in $(seq 1 30); do cdp_ready && { echo "CDP 就绪（${i}s）"; break; }; sleep 1; done
+    if [ -z "$PORT" ]; then
+      echo "[$(date '+%H:%M:%S')] 所有候选端口均未拿到 renderer，换肤失败。候选：$CANDIDATE_PORTS" >&2
+      exit 1
+    fi
   fi
 
   echo "注入皮肤..."
