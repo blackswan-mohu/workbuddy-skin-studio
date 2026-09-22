@@ -141,6 +141,19 @@ echo "已识别调用客户端：$DOUBAO_CLIENT_NAME"
 echo "即将自动重启$DOUBAO_CLIENT_NAME并加载皮肤，约几秒后完成（应用会短暂关闭再打开）。"
 echo "请先保存$DOUBAO_CLIENT_NAME里未保存的内容。"
 
+# 剥离用户可能传入的 --client（客户端已由 $DOUBAO_CLIENT_ID 固定传给 worker，
+# 若再透传 --client 会重复）。只保留 --theme 等其余参数透传给 worker。
+WORKER_ARGS=()
+skip_next=0
+for a in "$@"; do
+  if [ "$skip_next" = "1" ]; then skip_next=0; continue; fi
+  case "$a" in
+    --client) skip_next=1; continue ;;
+    --client=*) continue ;;
+    *) WORKER_ARGS+=("$a") ;;
+  esac
+done
+
 # 通过独立 Terminal 派生 worker，launcher 立即返回。
 # 为什么用 Terminal 而不是 nohup/setsid：换肤要同时满足两个约束——
 #   (1) worker 必须存活：关豆包会连累发起命令的 agent 及其子进程；
@@ -155,7 +168,7 @@ BOOT="/tmp/doubao-skin-boot-${DOUBAO_CLIENT_ID}.sh"
   echo "export DOUBAO_RESTART_DELAY=${DOUBAO_RESTART_DELAY:-3}"
   # 用 %q 逐个转义参数，安全承载 worker 命令与透传的 --theme 等参数
   printf 'bash %q --worker %q' "$SELF" "$DOUBAO_CLIENT_ID"
-  for arg in "$@"; do printf ' %q' "$arg"; done
+  for arg in "${WORKER_ARGS[@]}"; do printf ' %q' "$arg"; done
   printf ' >%q 2>&1\n' "$LOG"
   # 跑完自动关掉这个临时 Terminal 窗口，不打扰用户
   echo 'osascript -e "tell application \"Terminal\" to close (every window whose name contains \"doubao-skin-boot\")" >/dev/null 2>&1 || true'
@@ -168,7 +181,7 @@ else
   # 极端兜底：Terminal 不可用（如无 GUI）时退回 nohup（可能遇到上述约束冲突，仅作最后手段）
   echo "（Terminal 不可用，退回后台方式）" >&2
   DOUBAO_RESTART_DELAY="${DOUBAO_RESTART_DELAY:-3}" \
-    nohup bash "$SELF" --worker "$DOUBAO_CLIENT_ID" "$@" >"$LOG" 2>&1 </dev/null &
+    nohup bash "$SELF" --worker "$DOUBAO_CLIENT_ID" "${WORKER_ARGS[@]}" >"$LOG" 2>&1 </dev/null &
   disown
 fi
 
